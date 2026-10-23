@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+# your projects (rigs, clips, caches) stay out of the repository
+work/
+out/
+*.mp4
+*.npz
+# bench outputs (the tables are printed; dev/bench/results.jsonl keeps the runs)
+dev/bench/jumps.json
+dev/bench/clip_stats.json
+dev/bench/.regress/
+dev/bench/.one-camera/
+dev/bench/.depth-helper/
+# the tutorial's Python environment and a texture Blender writes next to the scripts
+.venv/
+waveletNoiseTile.bin

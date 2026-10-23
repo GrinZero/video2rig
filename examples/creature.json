@@ -1,0 +1,10 @@
+{
+ "name": "my_creature",
+ "seed_dense_px": 3,
+ "seed_body_px": 10,
+ "track_side": 768,
+ "solve": {"rounds": 3, "lm_iters": 6},
+ "clips": {
+  "my_clip": {}
+ }
+}

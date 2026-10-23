@@ -1,0 +1,12 @@
+numpy
+scipy
+opencv-python
+threadpoolctl
+# the joint reader: DINOv2 through Hugging Face (a reader saved with transformers 5 does not load in 4)
+transformers>=5
+# the auto-rig (video2rig.autorig)
+networkx
+scikit-image
+# PyTorch with CUDA for the joint reader and the point tracker (see README, "Install"):
+# python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+# ffmpeg is not a Python package: put ffmpeg on PATH (README, "Install")
