@@ -1,5 +1,11 @@
 # video2rig
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/GrinZero/video2rig/blob/colab-training/colab/train_reader.ipynb)
+
+**Colab GPU training:** [setup and one-command Python launcher](docs/COLAB.md).
+Render the training pictures locally with Blender, train the joint reader in Colab,
+then copy the weights back into the same creature project. The badge opens the notebook from the `colab-training` branch.
+
 Turn an AI video of **your own 3D model** into an animation of **your own rig** in Blender.
 
 ![A boss's start picture animated by an AI video generator, and the same move on its own rig](docs/images/fit-over-video.jpg)

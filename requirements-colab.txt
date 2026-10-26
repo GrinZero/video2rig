@@ -1,0 +1,6 @@
+# Keep Colab's preinstalled CUDA-enabled PyTorch. No Blender or tracker weights needed.
+numpy>=1.26,<3
+scipy>=1.11,<2
+opencv-python-headless>=4.8,<5
+threadpoolctl>=3,<4
+transformers>=5,<6

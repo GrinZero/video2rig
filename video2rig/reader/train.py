@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from ..common import Project, write_json
 from ..creature import Creature
 from . import end_pairs, is_offaxis, keypoints, points, project_ortho, render_keypoints
-from .net import SIZE, Reader, count_params, decode, gaussians, letterbox, normalise, sample_maps
+from .net import reader_autocast, SIZE, Reader, count_params, decode, gaussians, letterbox, normalise, sample_maps
 
 HOLD_OUT = .05
 
@@ -363,7 +363,7 @@ def evaluate(model, imgs, uv, valid, scale, views, dev, bs=32, ctx=None):
             ua, ub = (torch.from_numpy(z[i:i + bs]).to(dev) for z in ctx)
             ones = torch.ones(ua.shape[:2], device=dev)
             c = context_maps(ua, ones, ub, ones)
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with reader_autocast():
             out = model(x, c) if model.context else model(x)
         heat = out[0] if isinstance(out, tuple) else out                  # a depth reader gives its depth maps too
         p, _ = decode(heat.float())
@@ -395,7 +395,7 @@ def evaluate_skin(model, imgs, maps, dev, bs=32):
     ious, miss = [], []
     for i in range(0, len(imgs), bs):
         x = normalise(torch.from_numpy(imgs[i:i + bs]).to(dev))
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with reader_autocast():
             smap = model(x)[2].float()
         mt = torch.from_numpy(maps[i:i + bs].astype(np.float32)).to(dev)
         pm, tm = torch.sigmoid(smap[:, 3]) > .5, mt[..., 3] > .5
@@ -415,7 +415,7 @@ def evaluate_depth(model, imgs, uv, dd, inside, seen, views, kps, height, dev, b
     pred = np.zeros_like(dd)
     for i in range(0, len(imgs), bs):
         x = normalise(torch.from_numpy(imgs[i:i + bs]).to(dev))
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with reader_autocast():
             dmap = model(x)[1]
         pred[i:i + bs] = sample_maps(dmap.float(), torch.from_numpy(uv[i:i + bs]).to(dev)).cpu().numpy()
     model.train()
@@ -450,6 +450,7 @@ def main():
     ap.add_argument('--init', default='', help="another creature's reader.pt to start from (all but the keypoint "
                                                  "head): it already knows what a joint looks like in our renders")
     ap.add_argument('--batch', type=int, default=24)
+    ap.add_argument('--eval-batch', type=int, default=0, help='held-out batch size; 0 uses --batch')
     ap.add_argument('--lr', type=float, default=6e-4)
     ap.add_argument('--out', default='reader/reader.pt')
     ap.add_argument('--seed', type=int, default=0)
@@ -473,6 +474,11 @@ def main():
     ap.add_argument('--crops', action='store_true', help='a crop reader: limb ends in squares cut round them and '
                     'enlarged (crops.py); start it from the same creature\'s reader (--init)')
     a = ap.parse_args()
+    if a.batch < 1 or a.eval_batch < 0 or a.steps < 0 or a.minutes <= 0:
+        ap.error('batch/minutes must be positive; eval-batch/steps must be nonnegative')
+    if not torch.cuda.is_available():
+        ap.error('CUDA GPU required for training; in Colab choose Runtime > Change runtime type > GPU')
+    eval_bs = a.eval_batch or a.batch
     t0 = time.time()
     log = lambda s: print(f'[{time.time() - t0:6.1f}s] {s}', flush=True)
     torch.manual_seed(a.seed)
@@ -495,6 +501,8 @@ def main():
     cut = np.quantile(poses, 1 - HOLD_OUT)
     val = poses > cut
     tr = ~val
+    if not val.any() or not tr.any():
+        raise SystemExit('Need distinct training and held-out poses; generate more poses')
     log(f'{len(items)} pictures ({int(tr.sum())} to learn, {int(val.sum())} held out), {len(kps)} keypoints, '
         f'{imgs.nbytes / 1e9:.1f} GB; seen {seen.mean():.2f} of the keypoints')
     skin_maps, skin_ck = None, {}
@@ -545,7 +553,7 @@ def main():
         ends = np.zeros(len(kps), bool)
         for _, ks, _ in groups:
             ends[ks] = True
-        ev0 = evaluate(model, imgs[val], uv[val], inside[val] & seen[val] & ends[None], scale[val], views[val], dev)
+        ev0 = evaluate(model, imgs[val], uv[val], inside[val] & seen[val] & ends[None], scale[val], views[val], dev, bs=eval_bs)
         extra_report['full_reader_ends'] = {names[v]['name']: e for v, e in ev0.items()}
         log(f'limb ends {[g[0] for g in groups]}, crop sides (input px) '
             f'{[[round(x) for x in sv] for sv in sides]}; the reader it starts from, on them: '
@@ -573,7 +581,7 @@ def main():
                                  k=CROP_K, jitter=JITTER)
         log(f'crops: {len(A[0])} to learn, {len(B[0])} held out ({imgs.nbytes / 1e9:.1f} GB)')
     if a.eval:
-        ev = evaluate(model, imgs[val], uv[val], ev_valid[val], scale[val], views[val], dev)
+        ev = evaluate(model, imgs[val], uv[val], ev_valid[val], scale[val], views[val], dev, bs=eval_bs)
         report = {names[v]['name']: e for v, e in ev.items()}
         log(f'held out, {a.init}: {report}')
         write_json(Path(a.init).with_name(Path(a.init).stem + '-heldout.json'), {'held_out': report,
@@ -648,7 +656,7 @@ def main():
         lr_k = min((step + 1) / warm, 1.0) * .5 * (1 + math.cos(math.pi * frac))
         for g, l0 in zip(opt.param_groups, base):
             g['lr'] = l0 * lr_k
-        with torch.autocast('cuda', dtype=torch.bfloat16):
+        with reader_autocast():
             out = model(normalise(x).contiguous(memory_format=torch.channels_last), ctx)
         heat, dmap = (out[0], out[1]) if a.depth else (out, None)
         # the few cells round each joint weigh ten times the empty rest (else the maps learn "nowhere" first)
@@ -691,15 +699,15 @@ def main():
     torch.save({'state': model.state_dict(), 'keypoints': kps, 'size': SIZE, 'context': model.context,
                 'depth': model.depth, 'renders': a.renders, 'steps': step, **extra_ck}, out)
     if skin_maps is not None:
-        extra_ck['held_out_skin'] = evaluate_skin(model, imgs[val], skin_maps[val], dev)
+        extra_ck['held_out_skin'] = evaluate_skin(model, imgs[val], skin_maps[val], dev, bs=eval_bs)
         log(f'held out, skin: {extra_ck["held_out_skin"]}')
-    ev = evaluate(model, imgs[val], uv[val], ev_valid[val], scale[val], views[val], dev,
+    ev = evaluate(model, imgs[val], uv[val], ev_valid[val], scale[val], views[val], dev, bs=eval_bs,
                   ctx=(ua_all[val], ub_all[val]) if a.context else None)
     report = {names[v]['name']: e for v, e in ev.items()}
     log(f'held out: {report}')
     off = np.array([is_offaxis(kp) for kp in kps])
     if off.any() and not a.crops:
-        ev_off = evaluate(model, imgs[val], uv[val], ev_valid[val] & off[None], scale[val], views[val], dev,
+        ev_off = evaluate(model, imgs[val], uv[val], ev_valid[val] & off[None], scale[val], views[val], dev, bs=eval_bs,
                           ctx=(ua_all[val], ub_all[val]) if a.context else None)
         extra_report['held_out_side_points'] = {names[v]['name']: e for v, e in ev_off.items()}
         log(f'held out, the {int(off.sum())} points off the bones (claws, antlers): '
@@ -707,7 +715,7 @@ def main():
     depth_report = None
     if a.depth:
         depth_report = {names[v]['name']: e for v, e in evaluate_depth(
-            model, imgs[val], uv[val], dd_all[val], inside[val], seen[val], views[val], kps, cr.height, dev).items()}
+            model, imgs[val], uv[val], dd_all[val], inside[val], seen[val], views[val], kps, cr.height, dev, bs=eval_bs).items()}
         log(f'held out, depth: {depth_report}')
     torch.save({'state': model.state_dict(), 'keypoints': kps, 'size': SIZE, 'held_out': report,
                 'context': model.context, 'depth': model.depth, 'held_out_depth': depth_report,

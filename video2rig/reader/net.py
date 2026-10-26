@@ -24,6 +24,14 @@ STD = (0.229, 0.224, 0.225)
 BACKBONE = 'facebook/dinov2-small'
 
 
+def reader_autocast(dev='cuda'):
+    """Use native BF16 where available; FP32 on T4 and CPU (no loss scaler required)."""
+    from contextlib import nullcontext
+    if str(dev).startswith('cuda') and torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        return torch.autocast('cuda', dtype=torch.bfloat16)
+    return nullcontext()
+
+
 def block(cin, cout, stride=1):
     return nn.Sequential(nn.Conv2d(cin, cout, 3, stride, 1, bias=False), nn.BatchNorm2d(cout), nn.ReLU(inplace=True))
 

@@ -17,7 +17,7 @@ import torch
 
 from .. import clip as clipmod
 from ..common import Project
-from .net import SIZE, Reader, decode, letterbox, normalise
+from .net import reader_autocast, SIZE, Reader, decode, letterbox, normalise
 
 
 def load_reader(path, dev):
@@ -147,7 +147,7 @@ def _read(model, crops, dev, bs=16, corners=None, tta=0, tta_mode='heat', second
                         pa = pa + (cor[ta] - cor[tb])[:, None]
                         pn_ = pn_ + (cor[tn] - cor[tb])[:, None]
                     ctx = context_maps(pa * s + shift, prev_c[ta], pn_ * s + shift, prev_c[tn])
-                with torch.autocast('cuda', dtype=torch.bfloat16):
+                with reader_autocast(dev):
                     out = model(x, ctx) if model.context else model(x)
                 heat, dmap = (out[0], out[1]) if isinstance(out, tuple) else (out, None)
                 heat = heat.float()
